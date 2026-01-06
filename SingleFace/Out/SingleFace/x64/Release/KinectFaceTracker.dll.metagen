@@ -1,0 +1,34 @@
+ImageRuntimeVersion: v4.0.30319
+Assembly KinectFaceTracker, Version=0.0.*, Culture=Invariant Language (Invariant Country): 
+	hash=SHA1, flags=PublicKey
+Assembly mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089: 
+	hash=None, flags=None
+Assembly System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a: 
+	hash=None, flags=None
+Assembly System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089: 
+	hash=None, flags=None
+Class ReceiveKinectData: AutoLayout, AnsiClass, Class, Public, Sealed, BeforeFieldInit
+  :System.MulticastDelegate
+    Void .ctor(System.Object, IntPtr): PrivateScope, Public, SpecialName, RTSpecialName
+  Methods:
+    Invoke(Double, Double, Double, Double, Double, Double): PrivateScope, Public, Final, Virtual, VtableLayoutMask
+    BeginInvoke(Double, Double, Double, Double, Double, Double, AsyncCallback, Object): PrivateScope, Public, Final, Virtual, VtableLayoutMask
+    EndInvoke(IAsyncResult): PrivateScope, Public, Final, Virtual, VtableLayoutMask
+Class KinectFaceTracker: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Interfaces:
+    System.IDisposable
+  Methods:
+    Subscribe(ReceiveKinectData): PrivateScope, Public, HideBySig
+    Unsubscribe(ReceiveKinectData): PrivateScope, Public, HideBySig
+    Start(): PrivateScope, Public, HideBySig
+    StartWithCallback(): PrivateScope, Public, HideBySig
+    Stop(): PrivateScope, Public, HideBySig
+    StartStreaming(Int32, String): PrivateScope, Public, HideBySig
+    StartStreaming(Int32): PrivateScope, Public, HideBySig
+    StopStreaming(): PrivateScope, Public, HideBySig
+    IsStreaming(): PrivateScope, Public, HideBySig
+    TiltCamera(Int32): PrivateScope, Public, HideBySig
+    IsReceivingData(): PrivateScope, Public, HideBySig
+    GetImage(): PrivateScope, Public, HideBySig
+    Dispose(): PrivateScope, Public, Final, Virtual, HideBySig

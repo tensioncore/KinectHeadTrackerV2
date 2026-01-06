@@ -1,0 +1,1 @@
+C:\KinectFaceTrackerV2\SingleFace\Int\SingleFace\x64\Release\SingleFace.vcxproj.AssemblyReference.cache
