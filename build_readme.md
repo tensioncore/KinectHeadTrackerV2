@@ -66,3 +66,12 @@ msbuild "C:\Path\To\Repo\SingleFace\KinectFaceTracker.vcxproj" ^
   /t:Build ^
   /p:Configuration=Release ^
   /p:Platform=Win32
+```
+
+### Build the EXE second (important as it relies on the DLL to be built first)
+```bat
+msbuild "C:\Path\To\Repo\KinectHeadTracker\KinectHeadTracker.csproj" ^
+  /t:Build ^
+  /p:Configuration=Release ^
+  /p:Platform=x86
+```
