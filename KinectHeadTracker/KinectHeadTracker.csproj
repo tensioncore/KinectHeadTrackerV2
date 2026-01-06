@@ -116,7 +116,7 @@
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 <PropertyGroup>
   <PostBuildEvent>
-copy /Y "C:\KinectHeadTrackerV2\SingleFace\Out\SingleFace\x64\Release\KinectFaceTracker.dll" "$(TargetDir)"
+copy /Y "..\SingleFace\Out\SingleFace\x64\Release\KinectFaceTracker.dll" "$(TargetDir)"
 copy /Y "C:\Program Files\Microsoft SDKs\Kinect\Developer Toolkit v1.8.0\bin\FaceTrackLib.dll" "$(TargetDir)"
 copy /Y "C:\Program Files\Microsoft SDKs\Kinect\Developer Toolkit v1.8.0\bin\FaceTrackData.dll" "$(TargetDir)"
   </PostBuildEvent>
