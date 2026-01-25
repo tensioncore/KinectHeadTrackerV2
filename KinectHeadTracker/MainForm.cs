@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Globalization;
@@ -54,6 +55,7 @@ namespace KinectHeadtracker
         private readonly Color _btnBorder = Color.FromArgb(70, 70, 70);
         private readonly Color _btnHover = Color.FromArgb(55, 55, 55);
         private readonly Color _btnDown = Color.FromArgb(30, 30, 30);
+        private readonly ToolTip _startupHintTip = new ToolTip();
         // ----------------------------
         // Borderless / rounded window (Win32)
         // ----------------------------
@@ -72,6 +74,8 @@ namespace KinectHeadtracker
         private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
 
         private const int WM_NCLBUTTONDOWN = 0xA1;
+        private const int WM_SYSCOMMAND = 0x0112;
+        private const int SC_MONITORPOWER = 0xF170;
         private const int HTCAPTION = 0x2;
 
         private const int WINDOW_RADIUS = 12; // tweak if you want tighter/rounder
@@ -82,7 +86,13 @@ namespace KinectHeadtracker
         // ----------------------------
         // If your Phase 1 uses different field names, keep the logic the same and rename fields only.
         private AppSettings _settings;
-
+        // ----------------------------
+        // Startup options (v2.1 Final)
+        // ----------------------------
+        private bool _initializingUi = false;
+        private DateTime _nextAutoEngineAttempt = DateTime.MinValue;
+        private bool _autoStartEngineArmed = false;
+        private bool _autoStartUdpArmed = false;
         public MainForm()
         {
             InitializeComponent();
@@ -115,25 +125,18 @@ namespace KinectHeadtracker
                 }
                 else if (e.Mode == Microsoft.Win32.PowerModes.Resume)
                 {
-                    BeginInvoke(new Action(() =>
+                    try
                     {
-                        _suspendVideo = true;
-                        ClearLiveImage();
-
-                        var t = new Timer();
-                        t.Interval = 1500;
-                        t.Tick += (s2, e2) =>
+                        if (IsDisposed) return;
+                        if (!IsHandleCreated) return;
+                        BeginInvoke(new Action(() =>
                         {
-                            t.Stop();
-                            t.Dispose();
-                            _suspendVideo = false;
-                            try { picLiveVideo?.Invalidate(); } catch { }
-                        };
-                        t.Start();
-                    }));
+                            ResumeLiveVideoAfterDelay(1500);
+                        }));
+                    }
+                    catch { }
                 }
             };
-
             Microsoft.Win32.SystemEvents.PowerModeChanged += _powerModeHandler;
 
             picLiveVideo.Paint += PicLiveVideo_Paint;
@@ -158,9 +161,10 @@ namespace KinectHeadtracker
 
             WireUiOnce();
             WireHeaderDragging();
-
             // v2.1: apply settings to UI (Phase 1)
+            _initializingUi = true;
             ApplySettingsToUi();
+            _initializingUi = false;
 
             RefreshUiState();
         }
@@ -172,6 +176,35 @@ namespace KinectHeadtracker
             if (double.IsNaN(v) || double.IsInfinity(v)) return "—";
             if (Math.Abs(v) < 0.0005) v = 0; // kills "-0.000"
             return v.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+
+
+        // Creates a fully-owned, fully-decoded bitmap copy that is safe to draw with GDI+.
+        // IMPORTANT: tracker.GetImage() may return a reused/owned image. We must treat it as borrowed and never dispose it.
+        private static Bitmap CreateOwnedFrame(Image src)
+        {
+            if (src == null) return null;
+
+            try
+            {
+                if (src is Bitmap b)
+                {
+                    // Force a deep copy to a stable 32bpp format
+                    var rect = new Rectangle(0, 0, b.Width, b.Height);
+                    return b.Clone(rect, PixelFormat.Format32bppPArgb);
+                }
+
+                // For non-bitmap Images, materialize into a Bitmap first, then deep-clone.
+                using (var tmp = new Bitmap(src))
+                {
+                    var rect = new Rectangle(0, 0, tmp.Width, tmp.Height);
+                    return tmp.Clone(rect, PixelFormat.Format32bppPArgb);
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void StyleDataValueLabel(Label lbl)
@@ -247,43 +280,129 @@ namespace KinectHeadtracker
             }
             catch { }
         }
-        private void PicLiveVideo_Paint(object sender, PaintEventArgs e)
+
+        private void ResumeLiveVideoAfterDelay(int delayMs)
         {
-            if (_closing) return;
-            if (_suspendVideo) return;
-
-            Image frame;
-            lock (_frameLock) { frame = _currentFrame; }
-            if (frame == null) return;
-
             try
             {
-                e.Graphics.Clear(picLiveVideo.BackColor);
-                e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                if (_closing) return;
 
-                float boxW = picLiveVideo.Width;
-                float boxH = picLiveVideo.Height;
-                float imgW = frame.Width;
-                float imgH = frame.Height;
+                _suspendVideo = true;
+                ClearLiveImage();
 
-                if (imgW <= 0 || imgH <= 0) return;
+                var t = new Timer();
+                t.Interval = Math.Max(50, delayMs);
+                t.Tick += (s2, e2) =>
+                {
+                    try { t.Stop(); } catch { }
+                    try { t.Dispose(); } catch { }
 
-                // aspect-fit ("Zoom" behavior)
-                float scale = Math.Min(boxW / imgW, boxH / imgH);
-                float drawW = imgW * scale;
-                float drawH = imgH * scale;
-
-                float x = (boxW - drawW) / 2f;
-                float y = (boxH - drawH) / 2f;
-
-                e.Graphics.DrawImage(frame, x, y, drawW, drawH);
+                    if (_closing) return;
+                    _suspendVideo = false;
+                    try { picLiveVideo?.Invalidate(); } catch { }
+                };
+                t.Start();
             }
             catch
             {
-                // never crash paint
+                // If anything goes wrong here, fail open (don't wedge video forever)
+                try { _suspendVideo = false; } catch { }
             }
         }
+        private void PicLiveVideo_Paint(object sender, PaintEventArgs e)
+{
+    if (_closing) return;
+    if (_suspendVideo) return;
+
+    Bitmap frameCopy = null;
+
+    try
+    {
+        lock (_frameLock)
+        {
+            if (_currentFrame == null) return;
+
+            if (_currentFrame is Bitmap bmp)
+            {
+                var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+                frameCopy = bmp.Clone(rect, PixelFormat.Format32bppPArgb);
+            }
+            else
+            {
+                using (var tmp = new Bitmap(_currentFrame))
+                {
+                    var rect = new Rectangle(0, 0, tmp.Width, tmp.Height);
+                    frameCopy = tmp.Clone(rect, PixelFormat.Format32bppPArgb);
+                }
+            }
+        }
+
+        if (frameCopy == null) return;
+
+        e.Graphics.Clear(picLiveVideo.BackColor);
+        e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+        float boxW = picLiveVideo.Width;
+        float boxH = picLiveVideo.Height;
+        float imgW = frameCopy.Width;
+        float imgH = frameCopy.Height;
+
+        if (boxW <= 0 || boxH <= 0) return;
+        if (imgW <= 0 || imgH <= 0) return;
+
+        // aspect-fit ("Zoom" behavior)
+        float scale = Math.Min(boxW / imgW, boxH / imgH);
+        float drawW = imgW * scale;
+        float drawH = imgH * scale;
+
+        float x = (boxW - drawW) / 2f;
+        float y = (boxH - drawH) / 2f;
+
+        // If anything goes non-finite, bail (prevents rare GDI+ native crashes).
+        if (float.IsNaN(drawW) || float.IsNaN(drawH) || float.IsInfinity(drawW) || float.IsInfinity(drawH)) return;
+        if (float.IsNaN(x) || float.IsNaN(y) || float.IsInfinity(x) || float.IsInfinity(y)) return;
+
+        e.Graphics.DrawImage(frameCopy, x, y, drawW, drawH);
+    }
+    finally
+    {
+        try { frameCopy?.Dispose(); } catch { }
+    }
+}
+
+        protected override void WndProc(ref Message m)
+        {
+            try
+            {
+                if (m.Msg == WM_SYSCOMMAND)
+                {
+                    // Monitor power event (common when displays turn off/on without full system sleep)
+                    if (((int)m.WParam & 0xFFF0) == SC_MONITORPOWER)
+                    {
+                        int state = m.LParam.ToInt32();
+
+                        // state: -1 = on, 1 = low power, 2 = off
+                        if (state == 1 || state == 2)
+                        {
+                            _suspendVideo = true;
+                            try { ClearLiveImage(); } catch { }
+                        }
+                        else if (state == -1)
+                        {
+                            // Give the display stack a moment to settle before resuming GDI+ drawing
+                            if (!_closing && cbxLiveVideo != null && cbxLiveVideo.Checked)
+                                ResumeLiveVideoAfterDelay(250);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            base.WndProc(ref m);
+        }
+
+
 
 
         protected override void OnSizeChanged(EventArgs e)
@@ -333,14 +452,23 @@ namespace KinectHeadtracker
 
         private void MainForm_Load(object sender, EventArgs e)
         {
-            // v2.0 behavior remains: start engine on load (until Phase 4 startup options are wired)
-            StartEngine();
-
-            timer1.Enabled = true;
-            timer2.Enabled = cbxLiveVideo.Checked;
-
-            _udpStreaming = false;
-
+            // Settings load already happened in constructor.
+            // Arm auto-start options at startup.
+            try
+            {
+                _autoStartEngineArmed = (_settings != null && _settings.AutoStartEngineEnabled);
+                _autoStartUdpArmed = (_settings != null && _settings.AutoStartStreamingEnabled);
+            }
+            catch { }
+            // Ensure Run-at-Startup task matches the saved setting
+            try { SyncRunAtStartup(false); } catch { }
+            // If the user wants auto-start tracking, attempt immediately (and keep retrying on timer tick)
+            if (_autoStartEngineArmed)
+            {
+                _nextAutoEngineAttempt = DateTime.MinValue;
+                TryAutoStartIfNeeded();
+            }
+            // Keep UI state consistent
             RefreshUiState();
         }
 
@@ -477,15 +605,18 @@ namespace KinectHeadtracker
         }
 
         private void SaveSettingsBestEffort()
-        {
-            try
-            {
-                PullUiToSettings();
-                SettingsStore.Save(_settings);
-            }
-            catch { }
-        }
+{
+    // Prevent accidental overwrites while we are applying settings to the UI.
+    if (_closing) return;
+    if (_initializingUi) return;
 
+    try
+    {
+        PullUiToSettings();
+        SettingsStore.Save(_settings);
+    }
+    catch { }
+}
         // ----------------------------
         // UI wiring (single source)
         // ----------------------------
@@ -554,8 +685,38 @@ namespace KinectHeadtracker
                 }
             }
             catch { }
-        }
 
+            // v2.1 Final: settings toggles
+            try
+            {
+                if (cbxRunAtStartup != null)
+                {
+                    cbxRunAtStartup.CheckedChanged -= CbxRunAtStartup_CheckedChanged;
+                    cbxRunAtStartup.CheckedChanged += CbxRunAtStartup_CheckedChanged;
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (cbxAutoStartEngine != null)
+                {
+                    cbxAutoStartEngine.CheckedChanged -= CbxAutoStartEngine_CheckedChanged;
+                    cbxAutoStartEngine.CheckedChanged += CbxAutoStartEngine_CheckedChanged;
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (cbxAutoStartUdp != null)
+                {
+                    cbxAutoStartUdp.CheckedChanged -= CbxAutoStartUdp_CheckedChanged;
+                    cbxAutoStartUdp.CheckedChanged += CbxAutoStartUdp_CheckedChanged;
+                }
+            }
+            catch { }
+        }
         private void TxtUdpTargetIp_Leave(object sender, EventArgs e)
         {
             SaveSettingsBestEffort();
@@ -564,6 +725,179 @@ namespace KinectHeadtracker
         private void NumUdpPort_ValueChanged(object sender, EventArgs e)
         {
             SaveSettingsBestEffort();
+        }
+        private void CbxRunAtStartup_CheckedChanged(object sender, EventArgs e)
+        {
+            if (_initializingUi) return;
+            SaveSettingsBestEffort();
+            try { SyncRunAtStartup(true); } catch { }
+        }
+
+        private void CbxAutoStartEngine_CheckedChanged(object sender, EventArgs e)
+        {
+            if (_initializingUi) return;
+
+            SaveSettingsBestEffort();
+
+            _autoStartEngineArmed = (cbxAutoStartEngine != null && cbxAutoStartEngine.Checked);
+
+            if (_autoStartEngineArmed)
+            {
+                _nextAutoEngineAttempt = DateTime.MinValue;
+                TryAutoStartIfNeeded();
+            }
+        }
+
+        private void CbxAutoStartUdp_CheckedChanged(object sender, EventArgs e)
+        {
+            if (_initializingUi) return;
+
+            SaveSettingsBestEffort();
+
+            _autoStartUdpArmed = (cbxAutoStartUdp != null && cbxAutoStartUdp.Checked);
+
+            // If we're already receiving data, we can start immediately. Otherwise, next frame will trigger it.
+            if (_autoStartUdpArmed)
+            {
+                TryAutoStartUdpFromData();
+            }
+        }
+        private void ShowStartupHintOnly()
+        {
+            if (_closing) return;
+
+            try
+            {
+                if (cbxRunAtStartup != null)
+                {
+                    _startupHintTip.Show(
+                        "Could not update startup task. Try running as Administrator.",
+                        cbxRunAtStartup,
+                        cbxRunAtStartup.Width / 2,
+                        cbxRunAtStartup.Height / 2,
+                        2500
+                    );
+                }
+            }
+            catch { }
+        }
+        private void ShowStartupHintAndRevert(bool desiredStateThatFailed)
+        {
+            if (_closing) return;
+
+            // non-modal one-line hint
+            try
+            {
+                if (cbxRunAtStartup != null)
+                {
+                    _startupHintTip.Show(
+                        "Could not update startup task. Try running as Administrator.",
+                        cbxRunAtStartup,
+                        cbxRunAtStartup.Width / 2,
+                        cbxRunAtStartup.Height / 2,
+                        4000
+                    );
+                }
+            }
+            catch { }
+
+            // Revert checkbox + persisted setting
+            try
+            {
+                if (_settings == null) return;
+
+                bool revertTo = !desiredStateThatFailed;
+
+                _initializingUi = true;
+                try
+                {
+                    if (cbxRunAtStartup != null)
+                        cbxRunAtStartup.Checked = revertTo;
+
+                    _settings.RunAtStartupEnabled = revertTo;
+                    SettingsStore.Save(_settings);
+                }
+                finally
+                {
+                    _initializingUi = false;
+                }
+            }
+            catch { }
+        }
+        private void SyncRunAtStartup(bool revertOnFailure)
+        {
+            try
+            {
+                if (_settings == null) return;
+
+                var exePath = Application.ExecutablePath;
+                bool desired = _settings.RunAtStartupEnabled;
+
+                bool ok = desired
+                    ? StartupManager.Ensure(exePath)
+                    : StartupManager.Remove();
+
+                if (!ok)
+                {
+                    if (revertOnFailure) ShowStartupHintAndRevert(desired);
+                    else ShowStartupHintOnly();
+                }
+            }
+            catch
+            {
+                try
+                {
+                    if (revertOnFailure)
+                    {
+                        bool desired = (_settings != null && _settings.RunAtStartupEnabled);
+                        ShowStartupHintAndRevert(desired);
+                    }
+                    else
+                    {
+                        ShowStartupHintOnly();
+                    }
+                }
+                catch { }
+            }
+        }
+        private void TryAutoStartIfNeeded()
+        {
+            try
+            {
+                if (_closing) return;
+                if (_settings == null) return;
+
+                if (!_engineRunning && _autoStartEngineArmed && _settings.AutoStartEngineEnabled)
+                {
+                    if (DateTime.Now >= _nextAutoEngineAttempt)
+                    {
+                        _nextAutoEngineAttempt = DateTime.Now.AddSeconds(2);
+                        StartEngine();
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void TryAutoStartUdpFromData()
+        {
+            try
+            {
+                if (_closing) return;
+                if (_settings == null) return;
+                if (!_engineRunning) return;
+                if (_udpStreaming) return;
+
+                if (!_autoStartUdpArmed) return;
+                if (!_settings.AutoStartStreamingEnabled) return;
+
+                // Only auto-start when we have recent tracking frames (Kinect actually alive)
+                if ((DateTime.Now - lastDataReceived).TotalSeconds > 2) return;
+
+                StartUdpStream();
+                _autoStartUdpArmed = false; // one-shot unless user re-arms
+            }
+            catch { }
         }
 
         private void BtnClose_Click(object sender, EventArgs e)
@@ -682,8 +1016,18 @@ namespace KinectHeadtracker
 
             try
             {
-                if (_engineRunning) StopEngine();
-                else StartEngine();
+                if (_engineRunning)
+                {
+                    // User explicitly stopped the engine: disarm auto-start so we don't fight them.
+                    _autoStartEngineArmed = false;
+                    _autoStartUdpArmed = false;
+
+                    StopEngine();
+                }
+                else
+                {
+                    StartEngine();
+                }
             }
             finally
             {
@@ -699,6 +1043,9 @@ namespace KinectHeadtracker
 
             try
             {
+                // User explicitly toggled UDP: disarm auto-start so we don't fight them.
+                _autoStartUdpArmed = false;
+
                 if (_udpStreaming) StopUdpStream();
                 else StartUdpStream();
             }
@@ -708,7 +1055,6 @@ namespace KinectHeadtracker
                 RefreshUiState();
             }
         }
-
         // ----------------------------
         // Existing controls
         // ----------------------------
@@ -732,42 +1078,51 @@ namespace KinectHeadtracker
         }
 
         private void timer2_Tick(object sender, EventArgs e)
+{
+    if (_closing) return;
+
+    if (!cbxLiveVideo.Checked || _suspendVideo)
+    {
+        ClearLiveImage();
+        return;
+    }
+
+    Image borrowed = null;
+    Bitmap owned = null;
+
+    try
+    {
+        borrowed = tracker?.GetImage();
+        if (borrowed == null) return;
+
+        // Make our own safe copy. Do NOT dispose 'borrowed' (tracker may reuse it).
+        owned = CreateOwnedFrame(borrowed);
+        if (owned == null) return;
+
+        Image old = null;
+        lock (_frameLock)
         {
-            if (_closing) return;
-
-            if (!cbxLiveVideo.Checked || _suspendVideo)
-            {
-                ClearLiveImage();
-                return;
-            }
-
-            Image img = null;
-
-            try
-            {
-                img = tracker?.GetImage();
-                if (img == null) return;
-
-                Image old = null;
-                lock (_frameLock)
-                {
-                    old = _currentFrame;
-                    _currentFrame = img;
-                }
-
-                try { picLiveVideo.Invalidate(); } catch { }
-
-                try { old?.Dispose(); } catch { }
-            }
-            catch
-            {
-                try { img?.Dispose(); } catch { }
-            }
+            old = _currentFrame;
+            _currentFrame = owned; // now owned by us
         }
+
+        // Dispose the previous owned frame (safe; it's ours).
+        try { old?.Dispose(); } catch { }
+
+        try { picLiveVideo.Invalidate(); } catch { }
+    }
+    catch
+    {
+        // If anything fails, dispose the owned copy we made.
+        try { owned?.Dispose(); } catch { }
+    }
+}
 
         private void Timer1_Tick(object sender, EventArgs e)
         {
             if (_closing) return;
+
+            TryAutoStartIfNeeded();
             UpdateStatusPill();
         }
 
@@ -793,6 +1148,7 @@ namespace KinectHeadtracker
                     lblRoll.Text = F3(roll);
 
                     UpdateStatusPill();
+                    TryAutoStartUdpFromData();
                 }));
             }
             catch { }
@@ -1097,10 +1453,32 @@ namespace KinectHeadtracker
 
                 if (!_engineRunning)
                 {
-                    lblStatusPill.Text = "● STOPPED";
-                    _pillFg = Color.FromArgb(180, 180, 180);
-                    _pillBg = Color.FromArgb(28, 28, 28);
-                    _pillBorder = Color.FromArgb(75, 75, 75);
+                    // If there's no Kinect attached, show a clearer state than "Stopped".
+                    bool kinectConnected = true;
+                    try
+                    {
+                        if (tracker != null)
+                            kinectConnected = tracker.IsKinectConnected();
+                    }
+                    catch
+                    {
+                        kinectConnected = true; // fail open: don't claim disconnected on unexpected errors
+                    }
+
+                    if (!kinectConnected)
+                    {
+                        lblStatusPill.Text = "DISCONNECTED";
+                        _pillFg = Color.FromArgb(230, 150, 150);
+                        _pillBg = Color.FromArgb(32, 22, 22);
+                        _pillBorder = Color.FromArgb(110, 70, 70);
+                    }
+                    else
+                    {
+                        lblStatusPill.Text = "● STOPPED";
+                        _pillFg = Color.FromArgb(180, 180, 180);
+                        _pillBg = Color.FromArgb(28, 28, 28);
+                        _pillBorder = Color.FromArgb(75, 75, 75);
+                    }
                     lblStatusPill.Invalidate();
                     return;
                 }

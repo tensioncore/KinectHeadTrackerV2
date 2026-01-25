@@ -6,6 +6,7 @@
 #using <System.Drawing.dll>
 
 #include <msclr/marshal_cppstd.h>   // NEW: String^ -> std::string
+#include <NuiApi.h>                 // NEW: NuiGetSensorCount
 
 using namespace System;
 using namespace System::Drawing;
@@ -183,6 +184,14 @@ bool KinectFaceTracker::IsStreaming()
 {
     if (!app) return false;
     return app->IsStreaming() != 0;
+}
+
+// NEW (v2.1 stabilization): lightweight probe (no engine start required)
+bool KinectFaceTracker::IsKinectConnected()
+{
+    int count = 0;
+    HRESULT hr = NuiGetSensorCount(&count);
+    return (SUCCEEDED(hr) && count > 0);
 }
 
 void KinectFaceTracker::ReceiveData(double x, double y, double z, double yaw, double pitch, double roll)

@@ -31,6 +31,9 @@ public:
     bool TiltCamera(int angleDelta);
     bool IsReceivingData();
 
+    // NEW (v2.1 stabilization): lightweight probe (no engine start required)
+    bool IsKinectConnected();
+
     System::Drawing::Image^ GetImage();
 
 private:

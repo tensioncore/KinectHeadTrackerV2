@@ -21,12 +21,6 @@ The original tracker proved that Kinect head tracking was possible — but it al
 
 This is not a feature-piled rewrite — it is a **carefully engineered rebuild** that prioritizes correctness, resilience, and clarity.
 
-**v2.1 TO-DO**
-
-The implementation of the settings is a work in progress, and is not fully integrated on the function side of things, but its not stopping the GUI - and checkbox settings and ip/port settings do save properly. 
-
-**Currently not working:** Run at Startup, Auto-start Tracking and auto-start UDP stream. These settings will be saved but do nothing yet (I'm working on it).
-
 ---
 
 ## Core Design Principles
@@ -56,16 +50,22 @@ Safe managed/unmanaged image handling eliminates common Kinect crashes and GDI+ 
 - Explicit start/stop control (never forced)
 
 ### ⚙️ Full Settings System (v2.1)
-- Run on Windows startup
-- Auto-start engine and streaming
+- Run on Windows startup (Task Scheduler)
+- Auto-start tracking engine
+- Auto-start UDP streaming (starts only after tracking data is flowing)
 - Persistent window position
-- Configurable network settings - Allowing network data for advanced setups
+- Configurable network target (IP/port) for advanced setups
 - Sensible defaults with advanced control available
+
+> **Note on “Run at startup”:** this setting uses **Windows Task Scheduler**.  
+> On some systems, creating/updating the scheduled task may require running the app **once as Administrator**.  
+> If the checkbox doesn’t appear to “stick,” right-click the app → **Run as Administrator**, toggle it again, then reboot/log off to verify.
 
 ### 🖥 Polished Desktop UI
 - Minimal, focused interface
 - Clear engine and streaming state
 - Designed to stay out of your way during use
+- Graceful “Disconnected” handling when no Kinect is attached (no modal error spam)
 
 ---
 
@@ -86,7 +86,7 @@ It has been tested under **extended continuous operation**, with safeguards spec
 If you want:
 - A **set-and-forget** Kinect head tracker
 - Something that doesn’t require babysitting
-- Clean code you can understand and extend, or just build and use it!
+- Clean code you can understand and extend, or just build and use
 - A tool that behaves like professional software
 
 This is for you.
@@ -98,22 +98,24 @@ This is for you.
 This project is a fork and evolution of the original Magic Mau Kinect Head Tracker.
 Significant architectural, stability, and usability improvements have been made.
 
+---
+
 ## Building from Source
 
-If you want to build the project yourself (dependencies, SDK links, MSBuild commands),
+If you want to build the project yourself (dependencies, SDK links, MSBuild/dotnet commands),
 see:
 
 👉 [build_readme.md](build_readme.md)
 
 ## Precompiled Installer
 
-A precompiled, code-signed Windows installer is available for convenience at:
+A precompiled, code-signed Windows installer will be available for convenience at:
 
-👉 [Link not yet available: see https://nickdodd.com for updates until thr link is ready]
+👉 https://www.nickdodd.com/downloads/kinect-head-tracker
 
 This installer is optional and provided for users who prefer a ready-to-run build.
 The full source code remains available in this repository.
 
 ---
 
-Enjoy stable Kinect V1 head tracking! 
+Enjoy stable Kinect V1 head tracking!

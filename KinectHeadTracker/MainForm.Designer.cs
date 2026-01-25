@@ -475,7 +475,7 @@
             this.cbxRunAtStartup.Name = "cbxRunAtStartup";
             this.cbxRunAtStartup.Size = new System.Drawing.Size(97, 17);
             this.cbxRunAtStartup.TabIndex = 61;
-            this.cbxRunAtStartup.Text = "Run at startup";
+            this.cbxRunAtStartup.Text = "Run at startup (Task Scheduler)";
             this.cbxRunAtStartup.UseVisualStyleBackColor = true;
 
             // cbxAutoStartEngine

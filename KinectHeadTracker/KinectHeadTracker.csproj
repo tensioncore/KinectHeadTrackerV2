@@ -76,6 +76,7 @@
     </Compile>
     <Compile Include="AppSettings.cs" />
     <Compile Include="SettingsStore.cs" />
+    <Compile Include="StartupManager.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="MainForm.resx">

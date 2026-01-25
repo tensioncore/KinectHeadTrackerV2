@@ -8,6 +8,13 @@
 PVOID _opt = NULL;
 #endif
 
+static void FTLogHresult(const wchar_t* step, HRESULT hr)
+{
+    WCHAR buf[512];
+    wsprintf(buf, L"[SingleFace] %s failed. hr=0x%08X\r\n", step, hr);
+    OutputDebugStringW(buf);
+}
+
 FTHelper::FTHelper()
 {
     m_pFaceTracker = 0;
@@ -28,11 +35,23 @@ FTHelper::FTHelper()
     m_bFallbackToDefault = FALSE;
     m_colorType = NUI_IMAGE_TYPE_COLOR;
     m_colorRes = NUI_IMAGE_RESOLUTION_INVALID;
+
+    // v2.1 stabilization
+    m_hInitDoneEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    m_initHr = E_FAIL;
+
+    m_KinectSensorPresent = FALSE;
 }
 
 FTHelper::~FTHelper()
 {
     Stop();
+
+    if (m_hInitDoneEvent)
+    {
+        CloseHandle(m_hInitDoneEvent);
+        m_hInitDoneEvent = NULL;
+    }
 }
 
 HRESULT FTHelper::Init(HWND hWnd, FTHelperCallBack callBack, PVOID callBackParam,
@@ -57,6 +76,13 @@ HRESULT FTHelper::Init(HWND hWnd, FTHelperCallBack callBack, PVOID callBackParam
     m_colorType = colorType;
     m_colorRes = colorRes;
 
+    // v2.1 stabilization: reset init handshake
+    m_initHr = E_PENDING;
+    if (m_hInitDoneEvent)
+    {
+        ResetEvent(m_hInitDoneEvent);
+    }
+
     m_hFaceTrackingThread = CreateThread(NULL, 0, FaceTrackingStaticThread, (PVOID)this, 0, 0);
     if (!m_hFaceTrackingThread)
     {
@@ -65,12 +91,39 @@ HRESULT FTHelper::Init(HWND hWnd, FTHelperCallBack callBack, PVOID callBackParam
     }
 
     SetThreadPriority(m_hFaceTrackingThread, THREAD_PRIORITY_LOWEST);
+
+    // v2.1 stabilization:
+    // Wait briefly for Kinect init to succeed/fail. If no Kinect is connected,
+    // we return a failure HRESULT so SingleFaceNoWindow::Start() returns FALSE
+    // and the watchdog thread never starts (no spam, no tight loops).
+    if (m_hInitDoneEvent)
+    {
+        DWORD wait = WaitForSingleObject(m_hInitDoneEvent, 2000); // 2s
+        if (wait == WAIT_OBJECT_0 && FAILED(m_initHr))
+        {
+            // Thread will have exited; join + cleanup handle here.
+            m_ApplicationIsRunning = false;
+
+            WaitForSingleObject(m_hFaceTrackingThread, INFINITE);
+            CloseHandle(m_hFaceTrackingThread);
+            m_hFaceTrackingThread = NULL;
+
+            return m_initHr;
+        }
+    }
+
     return S_OK;
 }
 
 HRESULT FTHelper::Stop()
 {
     m_ApplicationIsRunning = false;
+
+    // ensure Init() can’t hang if Stop happens during init
+    if (m_hInitDoneEvent)
+    {
+        SetEvent(m_hInitDoneEvent);
+    }
 
     // Clean join + close thread handle (prevents leaks/races)
     if (m_hFaceTrackingThread)
@@ -216,14 +269,18 @@ DWORD WINAPI FTHelper::FaceTrackingThread()
         m_KinectSensor.GetDepthConfiguration(&depthConfig);
         pDepthConfig = &depthConfig;
         m_hint3D[0] = m_hint3D[1] = FT_VECTOR3D(0, 0, 0);
+
+        // v2.1 stabilization: signal Init() success
+        m_initHr = S_OK;
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
     }
     else
     {
+        // v2.1 stabilization: no modal dialogs, just fail fast.
         m_KinectSensorPresent = FALSE;
-        WCHAR errorText[MAX_PATH];
-        ZeroMemory(errorText, sizeof(WCHAR) * MAX_PATH);
-        wsprintf(errorText, L"Could not initialize the Kinect sensor. hr=0x%x\n", hr);
-        MessageBoxW(m_hWnd, errorText, L"Face Tracker Initialization Error\n", MB_OK);
+        m_initHr = hr;
+        FTLogHresult(L"KinectSensor::Init", hr);
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
         return 1;
     }
 
@@ -231,25 +288,41 @@ DWORD WINAPI FTHelper::FaceTrackingThread()
     m_pFaceTracker = FTCreateFaceTracker(_opt);
     if (!m_pFaceTracker)
     {
-        MessageBoxW(m_hWnd, L"Could not create the face tracker.\n", L"Face Tracker Initialization Error\n", MB_OK);
+        m_initHr = E_FAIL;
+        FTLogHresult(L"FTCreateFaceTracker", m_initHr);
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
+        m_KinectSensor.Release();
+        m_KinectSensorPresent = FALSE;
         return 2;
     }
 
     hr = m_pFaceTracker->Initialize(&videoConfig, pDepthConfig, NULL, NULL);
     if (FAILED(hr))
     {
-        WCHAR path[512], buffer[1024];
-        GetCurrentDirectoryW(ARRAYSIZE(path), path);
-        wsprintf(buffer, L"Could not initialize face tracker (%s). hr=0x%x", path, hr);
+        m_initHr = hr;
+        FTLogHresult(L"IFTFaceTracker::Initialize", hr);
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
 
-        MessageBoxW(m_hWnd, buffer, L"Face Tracker Initialization Error\n", MB_OK);
+        m_pFaceTracker->Release();
+        m_pFaceTracker = NULL;
+
+        m_KinectSensor.Release();
+        m_KinectSensorPresent = FALSE;
         return 3;
     }
 
     hr = m_pFaceTracker->CreateFTResult(&m_pFTResult);
     if (FAILED(hr) || !m_pFTResult)
     {
-        MessageBoxW(m_hWnd, L"Could not initialize the face tracker result.\n", L"Face Tracker Initialization Error\n", MB_OK);
+        m_initHr = FAILED(hr) ? hr : E_FAIL;
+        FTLogHresult(L"CreateFTResult", m_initHr);
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
+
+        m_pFaceTracker->Release();
+        m_pFaceTracker = NULL;
+
+        m_KinectSensor.Release();
+        m_KinectSensorPresent = FALSE;
         return 4;
     }
 
@@ -257,6 +330,13 @@ DWORD WINAPI FTHelper::FaceTrackingThread()
     m_colorImage = FTCreateImage();
     if (!m_colorImage || FAILED(hr = m_colorImage->Allocate(videoConfig.Width, videoConfig.Height, FTIMAGEFORMAT_UINT8_B8G8R8X8)))
     {
+        m_initHr = FAILED(hr) ? hr : E_FAIL;
+        FTLogHresult(L"m_colorImage->Allocate", m_initHr);
+        if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
+
+        if (m_pFTResult) { m_pFTResult->Release(); m_pFTResult = NULL; }
+        m_pFaceTracker->Release(); m_pFaceTracker = NULL;
+        m_KinectSensor.Release(); m_KinectSensorPresent = FALSE;
         return 5;
     }
 
@@ -265,6 +345,14 @@ DWORD WINAPI FTHelper::FaceTrackingThread()
         m_depthImage = FTCreateImage();
         if (!m_depthImage || FAILED(hr = m_depthImage->Allocate(depthConfig.Width, depthConfig.Height, FTIMAGEFORMAT_UINT16_D13P3)))
         {
+            m_initHr = FAILED(hr) ? hr : E_FAIL;
+            FTLogHresult(L"m_depthImage->Allocate", m_initHr);
+            if (m_hInitDoneEvent) SetEvent(m_hInitDoneEvent);
+
+            if (m_colorImage) { m_colorImage->Release(); m_colorImage = NULL; }
+            if (m_pFTResult) { m_pFTResult->Release(); m_pFTResult = NULL; }
+            m_pFaceTracker->Release(); m_pFaceTracker = NULL;
+            m_KinectSensor.Release(); m_KinectSensorPresent = FALSE;
             return 6;
         }
     }
@@ -303,7 +391,10 @@ DWORD WINAPI FTHelper::FaceTrackingThread()
         m_pFTResult->Release();
         m_pFTResult = NULL;
     }
+
     m_KinectSensor.Release();
+    m_KinectSensorPresent = FALSE;
+
     return 0;
 }
 
